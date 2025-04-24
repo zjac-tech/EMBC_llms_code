@@ -1,4 +1,4 @@
-# EMBC_llms_code
+# LLMs_for_triage
 
 Install related environment
 
