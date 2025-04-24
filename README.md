@@ -1,4 +1,4 @@
-# LLMs_for_triage
+# LLMs for triage
 
 Install related environment
 
