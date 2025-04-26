@@ -11,7 +11,7 @@ Model deployment
 
 Make sure you have all the files under [ms-swift/swift at main · modelscope/ms-swift] (https://github.com/modelscope/ms-swift/tree/main/swift) at the time of deployment
 
-1.Deploy unfine-tuned models
+1.Deploy unfine-tuned models(Swift version is 3.3.0.post1)
 
 ```python
 import os
