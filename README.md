@@ -213,3 +213,140 @@ with open('result/reslut.txt', 'w', encoding='utf-8') as file:
         extracted_department = extract_department(response, known_labels)
 
 ```
+
+For chatglm3-6b, the new versions of swift and transformer no longer support its correct operation and can be deployed and called through vllm.
+
+`pip install vllm`
+
+`pip install modelscope`
+
+`modelscope download --model ZhipuAI/chatglm3-6b --local_dir your_local_path`
+
+`CUDA_VISIBLE_DEVICES=2 vllm serve your_local_path --trust-remote-code`
+
+```python
+import time  # 引入时间模块
+import pandas as pd
+from openai import OpenAI
+
+# 数据读取和预处理
+data = pd.read_json('data/eval_data.jsonl', lines=True)
+selected_data = data[['question', 'label']]
+known_labels = list(selected_data['label'].unique())
+departments_str = ', '.join(known_labels)
+sample_data = selected_data.head(2000)  # 读取前2000个数据
+
+# 定义提取科室名称的函数
+def extract_department(response, known_labels):
+    # 按长度从长到短排序已知科室名称，确保更具体的科室名称优先匹配
+    known_labels_sorted = sorted(known_labels, key=len, reverse=True)
+    for label in known_labels_sorted:
+        if label in response:
+            return label
+    return None
+
+openai_api_key = "EMPTY"  # vLLM 服务不需要 API 密钥，可以使用任意字符串
+openai_api_base = "http://0.0.0.0:8000/v1"  # 请确保端口号与您启动 vLLM 服务时设置的端口号一致
+client = OpenAI(
+    api_key=openai_api_key,
+    base_url=openai_api_base,
+)
+
+max_new_tokens = 1000
+temperature = 0
+
+# 初始化统计变量
+correct_responses = 0
+error1_count = 0  # 分类错误
+error2_count = 0  # 未知分类
+total_inference_time = 0  # 总推理时间
+inference_times = []  # 每轮推理时间
+
+# 打开输出文件
+with open('result/result.txt', 'w', encoding='utf-8') as file:
+    # 遍历数据
+    for index, row in sample_data.iterrows():
+        symptom_description = row['question']
+        expected_department = row['label']
+        
+        # 构造第一个查询（判断疾病类型）
+        query1 = f'作为一个高级语言模型，你的任务是根据以下病人的描述来判断病人的疾病类型，只需要输出你判断的疾病名称，不需要任何其他建议，以下是患者的口述：{symptom_description}。请注意只需要输出正确的疾病名称，只需要输出正确的名称，不需要做任何分析。'
+        
+        # 记录开始时间
+        start_time = time.time()
+        
+        # 发送第一个请求
+        response1 = client.completions.create(
+            model="chatglm",  # 这里需要与您启动 vLLM 服务时加载的模型名称一致，通常默认是 "model"
+            prompt=query1,
+            max_tokens=max_new_tokens,
+            temperature=temperature
+        )
+        
+        # 记录中间时间
+        mid_time = time.time()
+        inference_time1 = mid_time - start_time
+        
+        # 获取响应
+        diseases = response1.choices[0].text.strip() if response1.choices else ''
+        
+        # 构造第二个查询（推荐科室）
+        query2 = f'作为一个高级语言模型，你的任务是根据病人的口述症状和疾病判断来推荐合适的科室。请根据病人的描述“{symptom_description}”疾病判断：“{diseases}”，将其分诊到以下科室中的一个：{departments_str}。请注意，只能选择上述提供的科室，不要提及或推荐任何未列出的科室。只需要输出科室，不需要做任何分析。'
+        
+        # 发送第二个请求
+        response2 = client.completions.create(
+            model="chatglm",  # 这里需要与您启动 vLLM 服务时加载的模型名称一致，通常默认是 "model"
+            prompt=query2,
+            max_tokens=max_new_tokens,
+            temperature=temperature
+        )
+        
+        # 记录结束时间
+        end_time = time.time()
+        inference_time2 = end_time - mid_time
+        total_inference_time += (inference_time1 + inference_time2)
+        inference_times.append(inference_time1 + inference_time2)
+        
+        # 获取响应
+        response_text = response2.choices[0].text.strip() if response2.choices else ''
+        
+        # 提取科室名称
+        extracted_department = extract_department(response_text, known_labels)
+        
+        # 判断是否正确
+        if extracted_department == expected_department:
+            correct_responses += 1
+        else:
+            # 判断错误类型
+            if extracted_department in known_labels:
+                error_type = "分类错误"
+                error1_count += 1
+            else:
+                error_type = "未知分类"
+                error2_count += 1
+            
+            # 写入错误案例
+            file.write(f"Question: {symptom_description}\n")
+            file.write(f"AI Response: {extracted_department}\n")
+            file.write(f"Expected Department: {expected_department}\n")
+            file.write(f"Error Type: {error_type}\n")
+            file.write(f"Inference Time: {inference_time1 + inference_time2:.4f} seconds\n")  # 写入当前推理时间
+            file.write("-" * 30 + "\n")
+        
+
+    # 计算并写入统计结果
+    total_samples = len(sample_data)
+    accuracy = (correct_responses / total_samples) * 100 if total_samples > 0 else 0
+    error1_rate = (error1_count / total_samples) * 100 if total_samples > 0 else 0
+    error2_rate = (error2_count / total_samples) * 100 if total_samples > 0 else 0
+    avg_inference_time = total_inference_time / total_samples if total_samples > 0 else 0
+    
+    file.write(f"AI Response Accuracy: {accuracy:.2f}%\n")
+    file.write(f"AI 错误分类: {error1_rate:.2f}%\n")
+    file.write(f"AI 错分未出现的标签: {error2_rate:.2f}%\n")
+    file.write(f"Average Inference Time per Sample: {avg_inference_time:.4f} seconds\n")
+
+
+
+
+```
